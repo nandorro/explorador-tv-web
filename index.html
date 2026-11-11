@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Explorador TV Web</title>
 <meta name="theme-color" content="#121212">
-<link rel="manifest" href="manifest.json">
+<link rel="manifest" href="manifest.webmanifest"><link rel="apple-touch-icon" href="icon-180.png">
 <style>
 :root{--bg:#121212;--pn:#1e1e1e;--fg:#eee;--mu:#90a4ae;--ac:#3d8bff;--ac2:#82b1ff}
 *{box-sizing:border-box}
@@ -66,6 +66,7 @@ const human=b=>b<1024?b+' B':b<1048576?(b/1024).toFixed(1)+' KB':b<1073741824?(b
 let stack=[],cur=null,items=[],sel=0,marked=new Set(),clip=null,sortMode=0,editing=null,blobUrl=null,mediaList=[];
 const SORTS=['Nombre','Tamaño','Fecha'];
 function say(t){$('msg').textContent=t}
+if("serviceWorker" in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});
 if(!window.showDirectoryPicker)$('warn').style.display='block';
 
 async function openDir(){
