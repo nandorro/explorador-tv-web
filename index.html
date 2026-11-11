@@ -38,7 +38,7 @@ button:focus,button:hover{outline:none;border-color:var(--ac2);background:#2a3a5
 </style>
 </head>
 <body>
-<div id="warn"><h2>Tu navegador no permite acceder a carpetas</h2><p>Usa Chrome o Edge (ordenador o Android). En Firefox/Safari solo puedes abrir archivos sueltos con «Abrir archivos».</p></div>
+<div id="warn"><h2>Este navegador no permite modificar carpetas</h2><p>Para editar usa Chrome o Edge. Aquí solo puedes abrir una carpeta en <b>solo lectura</b>.</p></div>
 <div id="bar">
  <button onclick="openDir()">📂 Abrir carpeta</button>
  <button onclick="openFiles()">📄 Abrir archivos</button>
@@ -67,11 +67,55 @@ let stack=[],cur=null,items=[],sel=0,marked=new Set(),clip=null,sortMode=0,editi
 const SORTS=['Nombre','Tamaño','Fecha'];
 function say(t){$('msg').textContent=t}
 if("serviceWorker" in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});
-if(!window.showDirectoryPicker)$('warn').style.display='block';
-
-async function openDir(){
-  try{cur=await showDirectoryPicker({mode:'readwrite'});stack=[cur];await load()}catch(e){if(e.name!='AbortError')say('Error: '+e.message)}
+/* ---- permisos y apertura de carpeta ---- */
+let readOnly=false;
+const idb=()=>new Promise((ok,ko)=>{const r=indexedDB.open('exptv',1);r.onupgradeneeded=()=>r.result.createObjectStore('h');r.onsuccess=()=>ok(r.result);r.onerror=()=>ko(r.error)});
+async function saveHandle(h){try{const d=await idb();d.transaction('h','readwrite').objectStore('h').put(h,'last')}catch{}}
+async function lastHandle(){try{const d=await idb();return await new Promise(ok=>{const q=d.transaction('h').objectStore('h').get('last');q.onsuccess=()=>ok(q.result);q.onerror=()=>ok(null)})}catch{return null}}
+async function grant(h){
+  const o={mode:'readwrite'};
+  if(await h.queryPermission(o)==='granted')return true;
+  return await h.requestPermission(o)==='granted';   // muestra el aviso del navegador
 }
+async function start(h){
+  if(!await grant(h)){say('Permiso denegado: sin él no se puede leer ni modificar la carpeta. Pulsa «Abrir carpeta» y elige «Permitir».');return false}
+  readOnly=false;cur=h;stack=[h];await saveHandle(h);await load();say('Permiso concedido. Carpeta abierta con lectura y escritura.');return true;
+}
+function openDir(){
+  const o=[];
+  if(window.showDirectoryPicker)o.push(['✅ Continuar: elegir carpeta y dar permiso',pickDir]);
+  o.push(['👁 Solo lectura (sin permisos de escritura)',()=>$('rofolder').click()]);
+  choose('El navegador te pedirá: 1) elegir la carpeta y 2) «Ver y editar archivos» → Permitir. No deja elegir carpetas del sistema ni la raíz de Descargas/Documentos: elige una subcarpeta.',o);
+}
+async function pickDir(){
+  try{
+    const h=await showDirectoryPicker({mode:'readwrite',id:'exptv'});
+    await start(h);
+  }catch(e){
+    if(e.name=='AbortError')say('Cancelado.');
+    else if(e.name=='SecurityError')say('El navegador no permite esa carpeta (carpeta del sistema o raíz de Descargas/Documentos). Elige una subcarpeta o usa «Solo lectura». '+e.message);
+    else say('Error: '+e.name+' '+e.message);
+  }
+}
+async function reopenLast(){
+  const h=await lastHandle();if(!h){say('No hay carpeta anterior guardada');return}
+  await start(h);
+}
+class MemDir{constructor(n){this.name=n;this.kind='directory';this.m=new Map()}
+  async*entries(){for(const e of this.m)yield e}}
+class MemFile{constructor(f){this.name=f.name;this.kind='file';this.f=f}async getFile(){return this.f}}
+function fromInput(inp){
+  const fs=[...inp.files];if(!fs.length){say('No se eligió nada');return}
+  const root=new MemDir(fs[0].webkitRelativePath.split('/')[0]);
+  for(const f of fs){const p=f.webkitRelativePath.split('/').slice(1);let d=root;
+    p.slice(0,-1).forEach(s=>{if(!d.m.has(s))d.m.set(s,new MemDir(s));d=d.m.get(s)});d.m.set(f.name,new MemFile(f))}
+  readOnly=true;cur=root;stack=[root];load();say('Carpeta abierta en SOLO LECTURA (este modo no pide permiso de escritura). Para editar usa Chrome/Edge de ordenador o Android.');inp.value='';
+}
+function blockRO(){if(readOnly){say('Modo solo lectura: abre la carpeta con permisos para modificar');return true}return false}
+document.addEventListener('DOMContentLoaded',async()=>{
+  const inp=document.createElement('input');inp.type='file';inp.id='rofolder';inp.webkitdirectory=true;inp.style.display='none';inp.onchange=()=>fromInput(inp);document.body.appendChild(inp);
+  if(window.showDirectoryPicker&&await lastHandle()){const b=document.createElement('button');b.textContent='🔁 Reabrir última carpeta';b.onclick=reopenLast;$('bar').insertBefore(b,$('bar').children[1])}
+});
 async function openFiles(){
   try{
     const hs=await (window.showOpenFilePicker?showOpenFilePicker({multiple:true}):Promise.reject(new Error('no soportado')));
@@ -152,7 +196,7 @@ async function showText(it){
   editing={it,dirty:false};t.oninput=()=>{editing.dirty=true;$('ovt').textContent='● '+it.name};
   overlay(it.name,t,true);t.focus();
 }
-async function saveText(){
+async function saveText(){if(blockRO())return;
   if(!editing)return;
   try{const w=await editing.it.handle.createWritable();await w.write($('ovb').firstChild.value);await w.close();
     editing.dirty=false;$('ovt').textContent=editing.it.name;say('Guardado');}catch(e){say('No se pudo guardar: '+e.message)}
@@ -167,7 +211,7 @@ function closeMenu(){$('menu').classList.remove('on');}
 function targets(){return marked.size?items.filter(i=>marked.has(i.name)):(items[sel]?[items[sel]]:[])}
 function markAll(){if(marked.size==items.length)marked.clear();else items.forEach(i=>marked.add(i.name));render()}
 function newMenu(){choose('Nuevo',[['📝 Archivo de texto',()=>mk('file')],['📁 Carpeta',()=>mk('dir')]])}
-async function mk(t){
+async function mk(t){if(blockRO())return;
   const n=prompt(t=='file'?'Nombre del archivo':'Nombre de la carpeta',t=='file'?'nuevo.txt':'Nueva carpeta');if(!n)return;
   try{if(t=='file')await cur.getFileHandle(n,{create:true});else await cur.getDirectoryHandle(n,{create:true});await load()}catch(e){say('Error: '+e.message)}
 }
@@ -189,11 +233,11 @@ async function uniqueName(dir,name){
   if(!await has(name))return name;
   const m=name.match(/^(.*?)(\.[^.]*)?$/);for(let i=1;;i++){const n=m[1]+' ('+i+')'+(m[2]||'');if(!await has(n))return n}
 }
-async function paste(){
+async function paste(){if(blockRO())return;
   if(!clip||!clip.length){say('Nada copiado');return}
   try{for(const s of clip)await copyEntry(s,cur,await uniqueName(cur,s.name));say('Pegado');await load()}catch(e){say('Error al pegar: '+e.message)}
 }
-async function rename(it){
+async function rename(it){if(blockRO())return;
   const n=prompt('Nuevo nombre',it.name);if(!n||n==it.name)return;
   try{
     if(it.handle.move)await it.handle.move(n);
@@ -201,7 +245,7 @@ async function rename(it){
     await load();
   }catch(e){say('Error: '+e.message)}
 }
-async function del(){
+async function del(){if(blockRO())return;
   const t=targets();if(!t.length||!confirm('¿Eliminar '+t.length+' elemento(s)? No se puede deshacer.'))return;
   try{for(const i of t)await cur.removeEntry(i.name,{recursive:true});say('Eliminado');await load()}catch(e){say('Error: '+e.message)}
 }
@@ -214,7 +258,7 @@ async function addToZip(z,it,path){
   if(it.kind=='file')z.file(path+it.name,await it.handle.getFile());
   else{const f=z.folder(path+it.name);for await(const [n,h] of it.handle.entries())await addToZip(z,{name:n,kind:h.kind,handle:h},path+it.name+'/')}
 }
-async function compress(t){
+async function compress(t){if(blockRO())return;
   try{
     say('Comprimiendo...');const z=new JSZip();for(const i of t)await addToZip(z,i,'');
     const name=await uniqueName(cur,(t.length==1?t[0].name.replace(/\.[^.]+$/,''):'comprimido')+'.zip');
@@ -223,7 +267,7 @@ async function compress(t){
     say('Creado '+name);await load();
   }catch(e){say('Error: '+e.message)}
 }
-async function extract(it,newFolder){
+async function extract(it,newFolder){if(blockRO())return;
   try{
     say('Extrayendo...');const z=await JSZip.loadAsync(await it.handle.getFile());
     let root=cur;if(newFolder)root=await cur.getDirectoryHandle(await uniqueName(cur,it.name.replace(/\.[^.]+$/,'')),{create:true});
@@ -270,6 +314,7 @@ document.querySelector('#bar').addEventListener('keydown',e=>{
   else if(e.key=='ArrowLeft'){bs[Math.max(0,i-1)].focus()}
   else if(e.key=='ArrowDown'){document.activeElement.blur();render();e.stopPropagation()}
 });
+if(!window.showDirectoryPicker)$('warn').style.display='block';
 </script>
 </body>
 </html>
