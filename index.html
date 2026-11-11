@@ -38,7 +38,7 @@ button:focus,button:hover{outline:none;border-color:var(--ac2);background:#2a3a5
 </style>
 </head>
 <body>
-<div id="warn"><h2>Este navegador no permite modificar carpetas</h2><p>Para editar usa Chrome o Edge. Aquí solo puedes abrir una carpeta en <b>solo lectura</b>.</p></div>
+<div id="warn"><h2>Este navegador no permite modificar carpetas</h2><p>Para editar usa Chrome o Edge. Pulsa «Abrir archivos» para elegir archivos (verlos, y editar textos que se descargan al guardar) o «Abrir carpeta» → «Solo lectura».</p></div>
 <div id="bar">
  <button onclick="openDir()">📂 Abrir carpeta</button>
  <button onclick="openFiles()">📄 Abrir archivos</button>
@@ -85,7 +85,8 @@ function openDir(){
   const o=[];
   if(window.showDirectoryPicker)o.push(['✅ Continuar: elegir carpeta y dar permiso',pickDir]);
   o.push(['👁 Solo lectura (sin permisos de escritura)',()=>$('rofolder').click()]);
-  choose('El navegador te pedirá: 1) elegir la carpeta y 2) «Ver y editar archivos» → Permitir. No deja elegir carpetas del sistema ni la raíz de Descargas/Documentos: elige una subcarpeta.',o);
+  if(!window.showDirectoryPicker)o.unshift(['📄 Elegir archivos sueltos (recomendado en Android)',()=>openFiles()]);
+  choose(window.showDirectoryPicker?'El navegador te pedirá: 1) elegir la carpeta y 2) «Ver y editar archivos» → Permitir. No deja elegir carpetas del sistema ni la raíz de Descargas/Documentos: elige una subcarpeta.':'Este navegador (p. ej. Chrome de Android) no permite dar permisos a carpetas. Elige archivos sueltos o abre una carpeta en solo lectura.',o);
 }
 async function pickDir(){
   try{
@@ -111,14 +112,24 @@ function fromInput(inp){
     p.slice(0,-1).forEach(s=>{if(!d.m.has(s))d.m.set(s,new MemDir(s));d=d.m.get(s)});d.m.set(f.name,new MemFile(f))}
   readOnly=true;cur=root;stack=[root];load();say('Carpeta abierta en SOLO LECTURA (este modo no pide permiso de escritura). Para editar usa Chrome/Edge de ordenador o Android.');inp.value='';
 }
+function fromFiles(inp){
+  const fs=[...inp.files];if(!fs.length){say('No se eligió nada');return}
+  const root=new MemDir('Archivos elegidos');fs.forEach(f=>root.m.set(f.name,new MemFile(f)));
+  readOnly=true;cur=root;stack=[root];load();inp.value='';
+  say('Archivos abiertos. En Android el navegador no permite acceder a carpetas: puedes verlos y editar textos (al guardar se descarga el archivo).');
+}
+window.addEventListener('error',e=>say('Error: '+e.message));
+window.addEventListener('unhandledrejection',e=>say('Error: '+(e.reason&&e.reason.message||e.reason)));
 function blockRO(){if(readOnly){say('Modo solo lectura: abre la carpeta con permisos para modificar');return true}return false}
 document.addEventListener('DOMContentLoaded',async()=>{
   const inp=document.createElement('input');inp.type='file';inp.id='rofolder';inp.webkitdirectory=true;inp.style.display='none';inp.onchange=()=>fromInput(inp);document.body.appendChild(inp);
+  const i2=document.createElement('input');i2.type='file';i2.id='rofiles';i2.multiple=true;i2.style.display='none';i2.onchange=()=>fromFiles(i2);document.body.appendChild(i2);
   if(window.showDirectoryPicker&&await lastHandle()){const b=document.createElement('button');b.textContent='🔁 Reabrir última carpeta';b.onclick=reopenLast;$('bar').insertBefore(b,$('bar').children[1])}
 });
 async function openFiles(){
   try{
-    const hs=await (window.showOpenFilePicker?showOpenFilePicker({multiple:true}):Promise.reject(new Error('no soportado')));
+    if(!window.showOpenFilePicker){$('rofiles').click();return}
+    const hs=await showOpenFilePicker({multiple:true});
     for(const h of hs){const f=await h.getFile();await openEntry({name:h.name,kind:'file',handle:h,file:f,size:f.size,date:f.lastModified})}
   }catch(e){if(e.name!='AbortError')say('Error: '+e.message)}
 }
@@ -130,6 +141,7 @@ async function load(){
     items.push({name,kind:h.kind,handle:h,size,date});
   }
   sortItems();sel=0;render();
+  if(!items.length)say('La carpeta está vacía o el navegador no dejó leer su contenido.');
 }
 function sortItems(){
   items.sort((a,b)=>(b.kind=='directory')-(a.kind=='directory')||(sortMode==1?b.size-a.size:sortMode==2?b.date-a.date:a.name.localeCompare(b.name,'es',{numeric:true})));
@@ -196,7 +208,9 @@ async function showText(it){
   editing={it,dirty:false};t.oninput=()=>{editing.dirty=true;$('ovt').textContent='● '+it.name};
   overlay(it.name,t,true);t.focus();
 }
-async function saveText(){if(blockRO())return;
+async function saveText(){
+  if(!editing)return;
+  if(readOnly){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([$('ovb').firstChild.value],{type:'text/plain'}));a.download=editing.it.name;a.click();editing.dirty=false;$('ovt').textContent=editing.it.name;say('Descargado como '+editing.it.name+' (modo sin permisos de escritura)');return}
   if(!editing)return;
   try{const w=await editing.it.handle.createWritable();await w.write($('ovb').firstChild.value);await w.close();
     editing.dirty=false;$('ovt').textContent=editing.it.name;say('Guardado');}catch(e){say('No se pudo guardar: '+e.message)}
