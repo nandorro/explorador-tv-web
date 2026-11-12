@@ -11,6 +11,7 @@
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:16px system-ui,sans-serif;height:100vh;display:flex;flex-direction:column}
 #selbar{display:none;flex-wrap:wrap;gap:6px;padding:8px;background:#1b3a5c;align-items:center}
+#list li.dt{background:#00e67655;outline:2px dashed #69f0ae}#upbtn.dt{border-color:#69f0ae;background:#00e67655}#ghost{position:fixed;z-index:20;pointer-events:none;background:#3d8bffcc;color:#fff;padding:6px 12px;border-radius:8px;font-weight:600;display:none}
 #selbar.on{display:flex}.rg{color:#82b1ff;font-family:monospace;padding:0 8px;font-weight:700}.rg:hover{background:#3d8bff55;border-radius:4px}#selc{font-weight:600;margin-right:8px}
 #list li{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
 #bar{display:flex;flex-wrap:wrap;gap:6px;padding:8px;background:var(--pn)}
@@ -56,7 +57,7 @@ button:focus,button:hover{outline:none;border-color:var(--ac2);background:#2a3a5
 <div id="bar">
  <button onclick="openDir()">📂 Abrir carpeta</button>
  <button onclick="openFiles()">📄 Abrir archivos</button>
- <button onclick="up()">⬆ Subir</button>
+ <button id="upbtn" onclick="up()">⬆ Subir</button>
  <button onclick="newMenu()">➕ Nuevo</button>
  <button onclick="compressMenu()">🗜 Comprimir</button>
  <button onclick="paste()">📋 Pegar</button>
@@ -66,7 +67,7 @@ button:focus,button:hover{outline:none;border-color:var(--ac2);background:#2a3a5
 </div>
 <div id="path">Pulsa «Abrir carpeta» y concede permiso de lectura y escritura.</div>
 <ul id="list"></ul>
-<div id="msg"></div>
+<div id="msg"></div><div id="ghost"></div>
 <div id="ov"><div id="ovh"><b id="ovt"></b><button id="ovs" onclick="saveText()" style="display:none">💾 Guardar</button><button onclick="closeOv()">✖ Cerrar</button></div><div id="ovb"></div></div>
 <div id="menu"><div id="mb"></div></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
@@ -163,6 +164,51 @@ function sortItems(){
 function sortNext(){sortMode=(sortMode+1)%3;sortItems();render();say('Orden: '+SORTS[sortMode])}
 let lpAt=0;
 let anchor=null;
+let drag=null;
+function startDrag(e){
+  if(blockRO())return;
+  drag={hover:-1,up:false};lpAt=Date.now();
+  try{navigator.vibrate&&navigator.vibrate([130,130,130])}catch{}
+  const g=$('ghost');g.textContent='↕ '+marked.size+' elemento(s)';g.style.display='block';moveGhost(e);
+  say('Arrastra sobre una carpeta (o sobre Subir) y suelta para mover');
+  document.addEventListener('pointermove',dragMove);document.addEventListener('pointerup',dragEnd);document.addEventListener('pointercancel',dragEnd);
+  document.addEventListener('touchmove',stopScroll,{passive:false});
+}
+const stopScroll=e=>e.preventDefault();
+function moveGhost(e){const g=$('ghost');g.style.left=(e.clientX+14)+'px';g.style.top=(e.clientY+14)+'px'}
+function dragClear(){document.querySelectorAll('.dt').forEach(x=>x.classList.remove('dt'))}
+function dragMove(e){
+  if(!drag)return;moveGhost(e);dragClear();
+  const el=document.elementFromPoint(e.clientX,e.clientY);
+  drag.hover=-1;drag.up=false;
+  const li=el&&el.closest('li');
+  if(li){const idx=[...$('list').children].indexOf(li);const it=items[idx];if(it&&it.kind=='directory'&&!marked.has(it.name)){drag.hover=idx;li.classList.add('dt')}}
+  else if(el&&el.closest('#upbtn')){drag.up=true;$('upbtn').classList.add('dt')}
+  const L=$('list').getBoundingClientRect();
+  if(e.clientY<L.top+50)$('list').scrollTop-=18;else if(e.clientY>L.bottom-50)$('list').scrollTop+=18;
+}
+async function dragEnd(e){
+  if(!drag)return;
+  document.removeEventListener('pointermove',dragMove);document.removeEventListener('pointerup',dragEnd);document.removeEventListener('pointercancel',dragEnd);document.removeEventListener('touchmove',stopScroll);
+  const d=drag;drag=null;dragClear();$('ghost').style.display='none';lpAt=Date.now();
+  if(e.type=='pointercancel')return;
+  let dest=null;
+  if(d.up&&stack.length>1)dest=stack[stack.length-2];
+  else if(d.hover>=0)dest=items[d.hover].handle;
+  if(!dest){say('Soltado fuera de una carpeta: no se ha movido nada');return}
+  await moveInto(dest);
+}
+async function moveInto(dest){
+  const t=selItems();
+  try{
+    for(const it of t){
+      if(await dest.isSameEntry(cur))continue;
+      await copyEntry(it,dest,await uniqueName(dest,it.name));
+      await cur.removeEntry(it.name,{recursive:true});
+    }
+    marked.clear();anchor=null;say('Movido a '+dest.name);await load();
+  }catch(e){say('Error al mover: '+e.message)}
+}
 function toggleMark(it){if(marked.has(it.name))marked.delete(it.name);else{marked.add(it.name);anchor=it.name}render()}
 function rangeTo(pos){
   if(pos<0||pos>=items.length){say('Selecciona primero una fila');return}
@@ -232,11 +278,13 @@ function render(){
     li.querySelector('.nm').textContent=it.name;
     let lt=null;
     const cancel=()=>{clearTimeout(lt);lt=null};
-    li.onpointerdown=e=>{cancel();lt=setTimeout(()=>{lpAt=Date.now();sel=i;toggleMark(it)},1000)};
+    li.onpointerdown=e=>{cancel();if(e.target.closest&&e.target.closest('.rg'))return;
+      if(marked.size&&marked.has(it.name)){lt=setTimeout(()=>{lt=null;startDrag(e)},2000)}
+      else lt=setTimeout(()=>{lpAt=Date.now();sel=i;toggleMark(it)},1000)};
     li.onpointerup=li.onpointerleave=li.onpointercancel=cancel;
     li.onpointermove=e=>{if(Math.abs(e.movementX)+Math.abs(e.movementY)>6)cancel()};
     li.onclick=e=>{if(Date.now()-lpAt<800)return;if(e.shiftKey&&marked.size){rangeTo(i);return}sel=i;if(marked.size){toggleMark(it)}else{render();openItem()}};
-    li.oncontextmenu=e=>{e.preventDefault();sel=i;itemMenu()};
+    li.oncontextmenu=e=>{e.preventDefault();if(e.pointerType==='touch'||e.pointerType==='pen')return;sel=i;itemMenu()};
     ul.appendChild(li);
   });
   const s=ul.querySelector('.sel');if(s)s.scrollIntoView({block:'nearest'});
