@@ -48,6 +48,7 @@ button:focus,button:hover{outline:none;border-color:var(--ac2);background:#2a3a5
  <button onclick="copySel(true)">✂ Cortar</button>
  <button onclick="duplicate()">⧉ Duplicar</button>
  <button onclick="renameSel()">✏ Renombrar</button>
+ <button onclick="details()">ℹ Detalles</button>
  <button onclick="del()">🗑 Eliminar</button>
  <button onclick="clearMarks()">✖ Cancelar</button>
 </div>
@@ -171,6 +172,40 @@ async function duplicate(){
   if(blockRO())return;const t=marked.size?selItems():targets();if(!t.length)return;
   try{for(const s of t)await copyEntry(s,cur,await uniqueName(cur,s.name));say('Duplicado');await load()}catch(e){say('Error al duplicar: '+e.message)}
 }
+async function treeInfo(h){let f=0,d=0,b=0;
+  for await(const [n,x] of h.entries()){if(x.kind=='file'){f++;try{b+=(await x.getFile()).size}catch{}}else{d++;const r=await treeInfo(x);f+=r.f;d+=r.d;b+=r.b}}
+  return {f,d,b}}
+const fmtT=s=>{s=Math.round(s);return (s>=3600?Math.floor(s/3600)+':':'')+String(Math.floor(s/60)%60).padStart(2,'0')+':'+String(s%60).padStart(2,'0')};
+async function details(){
+  const t=marked.size?selItems():targets();if(!t.length)return;
+  const pre=document.createElement('pre');pre.textContent='Calculando...';overlay(t.length==1?'Detalles':'Detalles de la selección',pre);
+  const L=[];
+  try{
+    if(t.length==1){
+      const it=t[0];L.push('Nombre: '+it.name);L.push('Ruta: '+stack.map(s=>s.name).join(' / ')+' / '+it.name);
+      if(it.kind=='directory'){const r=await treeInfo(it.handle);L.push('Tipo: Carpeta','Tamaño: '+human(r.b)+' ('+r.b.toLocaleString('es')+' bytes)','Contiene: '+r.f+' archivos y '+r.d+' carpetas')}
+      else{
+        const f=await it.handle.getFile();const e=ext(it.name);
+        L.push('Tipo: '+(f.type||'desconocido')+(e?'  (.'+e+')':''),'Tamaño: '+human(f.size)+' ('+f.size.toLocaleString('es')+' bytes)','Modificado: '+new Date(f.lastModified).toLocaleString('es'));
+        const k=kind(it.name),u=URL.createObjectURL(f);
+        try{
+          if(k=='img'){const im=await new Promise((ok,ko)=>{const i=new Image();i.onload=()=>ok(i);i.onerror=ko;i.src=u});L.push('Dimensiones: '+im.naturalWidth+' x '+im.naturalHeight+' px')}
+          else if(k=='vid'||k=='aud'){const m=await new Promise((ok,ko)=>{const v=document.createElement(k=='vid'?'video':'audio');v.preload='metadata';v.onloadedmetadata=()=>ok(v);v.onerror=ko;v.src=u;setTimeout(ko,4000)});
+            L.push('Duración: '+fmtT(m.duration));if(k=='vid')L.push('Resolución: '+m.videoWidth+' x '+m.videoHeight)}
+          else if(k=='txt'){const tx=await f.text();L.push('Líneas: '+tx.split(String.fromCharCode(10)).length,'Caracteres: '+tx.length)}
+        }catch{}
+        URL.revokeObjectURL(u);
+      }
+      L.push('Carpeta actual: '+cur.name);
+    }else{
+      let f=0,d=0,b=0;
+      for(const it of t){if(it.kind=='file'){f++;b+=(await it.handle.getFile()).size}else{d++;const r=await treeInfo(it.handle);f+=r.f;d+=r.d;b+=r.b}}
+      L.push('Elementos seleccionados: '+t.length,'Tamaño total: '+human(b)+' ('+b.toLocaleString('es')+' bytes)','Total: '+f+' archivos y '+d+' carpetas','');
+      t.slice(0,15).forEach(i=>L.push('- '+i.name));if(t.length>15)L.push('... y '+(t.length-15)+' más');
+    }
+  }catch(e){L.push('Error: '+e.message)}
+  pre.textContent=L.join(String.fromCharCode(10));
+}
 function renameSel(){const t=selItems();if(t.length==1)rename(t[0]);else say('Para renombrar deja seleccionado un solo elemento')}
 function render(){
   $('selbar').classList.toggle('on',marked.size>0);
@@ -268,7 +303,7 @@ function itemMenu(){
    ['📋 Copiar',()=>{clip=targets().map(i=>({...i,parent:cur,cut:false}));say(clip.length+' copiado(s)')}],
    ['✂ Cortar',()=>{if(blockRO())return;clip=targets().map(i=>({...i,parent:cur,cut:true}));say(clip.length+' cortado(s)')}],
    ['⧉ Duplicar',()=>duplicate()],
-   ['✏ Renombrar',()=>rename(it)],['🗑 Eliminar',()=>del()],['ℹ Propiedades',()=>say(it.name+' · '+(it.kind=='file'?human(it.size)+' · ':'')+(it.date?new Date(it.date).toLocaleString():''))]];
+   ['✏ Renombrar',()=>rename(it)],['🗑 Eliminar',()=>del()],['ℹ Detalles',()=>details()]];
   if(it.kind=='file'&&kind(it.name)!='arc')o.splice(1,0,['📝 Editar como texto',async()=>{it.file=await it.handle.getFile();showText(it)}]);
   if(it.kind=='file')o.push(['⬇ Descargar',async()=>{const f=await it.handle.getFile();const a=document.createElement('a');a.href=URL.createObjectURL(f);a.download=it.name;a.click()}]);
   choose(it.name,o);
