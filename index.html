@@ -64,6 +64,7 @@ button:focus,button:hover{outline:none;border-color:var(--ac2);background:#2a3a5
  <button onclick="paste()">📋 Pegar</button>
  <button onclick="markAll()">☑ Seleccionar todo</button>
  <button onclick="sortNext()">↕ Ordenar</button>
+ <button onclick="sortStl()">🧊 Ordenar STL</button>
  <button onclick="itemMenu()">⋯ Más</button>
 </div>
 <div id="top"><div id="path">Pulsa «Abrir carpeta» y concede permiso de lectura y escritura.</div><button id="srch" onclick="searchDlg()" title="Buscar (Ctrl+F)">🔍 Buscar</button></div>
@@ -263,6 +264,40 @@ async function details(){
     }
   }catch(e){L.push('Error: '+e.message)}
   pre.textContent=L.join(String.fromCharCode(10));
+}
+async function scanStlTree(dir,parent,out,skipName){
+  for await(const [name,h] of dir.entries()){
+    if(h.kind=='directory'){if(skipName&&name===skipName)continue;if(name.startsWith('.'))continue;await scanStlTree(h,dir,out,null)}
+    else if(ext(name)=='stl'){let size=0;try{size=(await h.getFile()).size}catch{}out.push({name,handle:h,parent:dir,size})}
+  }
+}
+async function sortStl(){
+  if(!cur){say('Abre primero la carpeta Documentos (o el almacenamiento entero)');return}
+  if(blockRO())return;
+  const root=stack[0];say('Buscando archivos STL en «'+root.name+'»...');
+  const found=[];
+  try{await scanStlTree(root,null,found,'STL')}catch(e){say('Error: '+e.message);return}
+  if(!found.length){say('No hay archivos STL fuera de «'+root.name+'/STL»');return}
+  const total=found.reduce((a,f)=>a+f.size,0);
+  choose('Encontrados '+found.length+' STL ('+human(total)+') en «'+root.name+'». Destino: «'+root.name+'/STL»'+(/^(documents|documentos)$/i.test(root.name)?'':'  (para Documents/STL abre esa carpeta)'),
+    [['Mover a STL',()=>doSortStl(root,found,true)],['Copiar a STL',()=>doSortStl(root,found,false)]]);
+}
+async function doSortStl(root,found,move){
+  let ok=0,skip=0;
+  try{
+    const dest=await root.getDirectoryHandle('STL',{create:true});
+    for(const f of found){
+      say((move?'Moviendo ':'Copiando ')+f.name+'...');
+      let dup=false;
+      try{const e=await dest.getFileHandle(f.name);dup=(await e.getFile()).size===f.size}catch{}
+      if(dup){skip++;continue}
+      await copyEntry({kind:'file',handle:f.handle},dest,await uniqueName(dest,f.name));
+      if(move)await f.parent.removeEntry(f.name);
+      ok++;
+    }
+    say((move?'Movidos ':'Copiados ')+ok+' STL a «'+root.name+'/STL»'+(skip?' (omitidos '+skip+' ya existentes con mismo nombre y tamaño)':''));
+    await load();
+  }catch(e){say('Error: '+e.message)}
 }
 function renameSel(){const t=selItems();if(t.length==1)rename(t[0]);else say('Para renombrar deja seleccionado un solo elemento')}
 const norm=t=>t.normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase();
