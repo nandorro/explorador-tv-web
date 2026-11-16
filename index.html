@@ -17,6 +17,7 @@ body{margin:0;background:var(--bg);color:var(--fg);font:16px system-ui,sans-seri
 #bar{display:flex;flex-wrap:wrap;gap:6px;padding:8px;background:var(--pn)}
 button{background:#333;color:var(--fg);border:2px solid transparent;border-radius:6px;padding:8px 12px;font:inherit;cursor:pointer}
 button:focus,button:hover{outline:none;border-color:var(--ac2);background:#2a3a55}
+#top{display:flex;align-items:center;background:#181818;padding-right:8px}#top #path{flex:1}#srch{white-space:nowrap}
 #path{padding:6px 12px;color:var(--mu);background:#181818;word-break:break-all}
 #list{flex:1;overflow:auto;margin:0;padding:0;list-style:none}
 #list li{padding:10px 14px;display:flex;gap:10px;cursor:pointer;border-bottom:1px solid #222}
@@ -65,7 +66,7 @@ button:focus,button:hover{outline:none;border-color:var(--ac2);background:#2a3a5
  <button onclick="sortNext()">↕ Ordenar</button>
  <button onclick="itemMenu()">⋯ Más</button>
 </div>
-<div id="path">Pulsa «Abrir carpeta» y concede permiso de lectura y escritura.</div>
+<div id="top"><div id="path">Pulsa «Abrir carpeta» y concede permiso de lectura y escritura.</div><button id="srch" onclick="searchDlg()" title="Buscar (Ctrl+F)">🔍 Buscar</button></div>
 <ul id="list"></ul>
 <div id="msg"></div><div id="ghost"></div>
 <div id="ov"><div id="ovh"><b id="ovt"></b><button id="ovs" onclick="saveText()" style="display:none">💾 Guardar</button><button onclick="closeOv()">✖ Cerrar</button></div><div id="ovb"></div></div>
@@ -135,7 +136,7 @@ function fromFiles(inp){
 }
 window.addEventListener('error',e=>say('Error: '+e.message));
 window.addEventListener('unhandledrejection',e=>say('Error: '+(e.reason&&e.reason.message||e.reason)));
-function blockRO(){if(readOnly){say('Modo solo lectura: abre la carpeta con permisos para modificar');return true}return false}
+function blockRO(){if(searchMode){say('Estás viendo resultados de búsqueda: pulsa Subir para volver a la carpeta');return true}if(readOnly){say('Modo solo lectura: abre la carpeta con permisos para modificar');return true}return false}
 document.addEventListener('DOMContentLoaded',async()=>{
   const inp=document.createElement('input');inp.type='file';inp.id='rofolder';inp.webkitdirectory=true;inp.style.display='none';inp.onchange=()=>fromInput(inp);document.body.appendChild(inp);
   const i2=document.createElement('input');i2.type='file';i2.id='rofiles';i2.multiple=true;i2.style.display='none';i2.onchange=()=>fromFiles(i2);document.body.appendChild(i2);
@@ -148,8 +149,9 @@ async function openFiles(){
     for(const h of hs){const f=await h.getFile();await openEntry({name:h.name,kind:'file',handle:h,file:f,size:f.size,date:f.lastModified})}
   }catch(e){if(e.name!='AbortError')say('Error: '+e.message)}
 }
+let searchMode=false;
 async function load(){
-  items=[];marked.clear();
+  searchMode=false;items=[];marked.clear();
   for await(const [name,h] of cur.entries()){
     let size=0,date=0;
     if(h.kind=='file'){try{const f=await h.getFile();size=f.size;date=f.lastModified}catch{}}
@@ -263,11 +265,31 @@ async function details(){
   pre.textContent=L.join(String.fromCharCode(10));
 }
 function renameSel(){const t=selItems();if(t.length==1)rename(t[0]);else say('Para renombrar deja seleccionado un solo elemento')}
+const norm=t=>t.normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase();
+function searchDlg(){
+  if(!cur){say('Abre primero una carpeta');return}
+  const q=prompt('Buscar en «'+cur.name+'» y sus subcarpetas:','');if(q&&q.trim())doSearch(q.trim());
+}
+async function doSearch(q){
+  const nq=norm(q),res=[];let seen=0;const base=stack.slice();
+  say('Buscando «'+q+'»...');
+  async function walk(dir,stk,rel){
+    for await(const [name,h] of dir.entries()){
+      if(res.length>=500||seen>30000)return;seen++;
+      const r=rel?rel+'/'+name:name;
+      if(norm(name).includes(nq)){let size=0,date=0;if(h.kind=='file'){try{const f=await h.getFile();size=f.size;date=f.lastModified}catch{}}res.push({name,kind:h.kind,handle:h,size,date,rel:r,stk})}
+      if(h.kind=='directory')await walk(h,stk.concat([h]),r);
+    }
+  }
+  try{await walk(cur,base,'')}catch(e){say('Error: '+e.message);return}
+  items=res;marked.clear();searchMode=true;sortItems();sel=0;render();
+  say(res.length+' resultado(s) para «'+q+'»'+(res.length>=500?' (limitado a 500)':'')+'. Subir = salir de la búsqueda.');
+}
 function render(){
   $('selbar').classList.toggle('on',marked.size>0);
   $('selc').textContent=marked.size+' seleccionado(s)';
   $('selall').textContent=marked.size>=items.length&&items.length?'☐ Quitar todo':'☑ Seleccionar todo';
-  $('path').textContent=stack.map(s=>s.name).join(' / ')+'  ('+items.length+' elementos)';
+  $('path').textContent=searchMode?'🔍 Resultados de la búsqueda ('+items.length+')':stack.map(s=>s.name).join(' / ')+'  ('+items.length+' elementos)';
   const ul=$('list');ul.innerHTML='';
   items.forEach((it,i)=>{
     const li=document.createElement('li');
@@ -275,7 +297,7 @@ function render(){
     const k=it.kind=='directory'?'dir':kind(it.name);
     li.innerHTML='<span>'+ICON[k]+'</span><span class="nm"></span><span class="sz">'+(it.kind=='file'?human(it.size):'')+'</span>'+(marked.size?'<span class="rg" title="Seleccionar hasta aquí">[ ]</span>':'');
     const rg=li.querySelector('.rg');if(rg)rg.onclick=e=>{e.stopPropagation();rangeTo(i)};
-    li.querySelector('.nm').textContent=it.name;
+    li.querySelector('.nm').textContent=searchMode?it.rel:it.name;
     let lt=null;
     const cancel=()=>{clearTimeout(lt);lt=null};
     li.onpointerdown=e=>{cancel();if(e.target.closest&&e.target.closest('.rg'))return;
@@ -289,10 +311,10 @@ function render(){
   });
   const s=ul.querySelector('.sel');if(s)s.scrollIntoView({block:'nearest'});
 }
-async function up(){if(stack.length>1){stack.pop();cur=stack[stack.length-1];await load()}else say('Ya estás en la carpeta raíz elegida')}
+async function up(){if(searchMode){await load();return}if(stack.length>1){stack.pop();cur=stack[stack.length-1];await load()}else say('Ya estás en la carpeta raíz elegida')}
 async function openItem(){
   const it=items[sel];if(!it)return;
-  if(it.kind=='directory'){cur=it.handle;stack.push(cur);await load();return}
+  if(it.kind=='directory'){if(searchMode){stack=it.stk.concat([it.handle])}else stack.push(it.handle);cur=it.handle;await load();return}
   if(kind(it.name)=='arc'){choose('Comprimido: '+it.name,[['Extraer en carpeta "'+it.name.replace(/\.[^.]+$/,'')+'"',()=>extract(it,true)],['Extraer aquí',()=>extract(it,false)]]);return}
   it.file=await it.handle.getFile();await openEntry(it);
 }
@@ -462,6 +484,7 @@ document.addEventListener('keydown',e=>{
   else if(e.key==' '){const it=items[sel];if(it){marked.has(it.name)?marked.delete(it.name):marked.add(it.name);render();e.preventDefault()}}
   else if(e.key=='ContextMenu'||e.key=='F2'){itemMenu()}
   else if(e.key=='Delete'){del()}
+  else if(e.ctrlKey&&e.key=='f'){e.preventDefault();searchDlg()}
   else if(e.ctrlKey&&e.key=='c'){clip=targets().map(i=>({...i,parent:cur,cut:false}));say(clip.length+' copiado(s)')}
   else if(e.ctrlKey&&e.key=='x'){if(!blockRO()){clip=targets().map(i=>({...i,parent:cur,cut:true}));say(clip.length+' cortado(s)')}}
   else if(e.ctrlKey&&e.key=='d'){e.preventDefault();duplicate()}
