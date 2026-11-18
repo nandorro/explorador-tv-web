@@ -52,6 +52,7 @@ button:focus,button:hover{outline:none;border-color:var(--ac2);background:#2a3a5
  <button onclick="duplicate()">⧉ Duplicar</button>
  <button onclick="renameSel()">✏ Renombrar</button>
  <button onclick="details()">ℹ Detalles</button>
+ <button onclick="shareItems()">📤 Compartir</button>
  <button onclick="del()">🗑 Eliminar</button>
  <button onclick="clearMarks()">✖ Cancelar</button>
 </div>
@@ -67,10 +68,10 @@ button:focus,button:hover{outline:none;border-color:var(--ac2);background:#2a3a5
  <button onclick="sortStl()">🧊 Ordenar STL</button>
  <button onclick="itemMenu()">⋯ Más</button>
 </div>
-<div id="top"><div id="path">Pulsa «Abrir carpeta» y concede permiso de lectura y escritura.</div><button id="srch" onclick="searchDlg()" title="Buscar (Ctrl+F)">🔍 Buscar</button></div>
+<div id="top"><div id="path">Pulsa «Abrir carpeta» y concede permiso de lectura y escritura.</div><button id="srch" onclick="searchDlg()" title="Buscar (Ctrl+F)">🔍 Buscar</button><button id="shr" onclick="shareItems()" title="Compartir" style="margin-left:6px">📤 Compartir</button></div>
 <ul id="list"></ul>
 <div id="msg"></div><div id="ghost"></div>
-<div id="ov"><div id="ovh"><b id="ovt"></b><button id="ovs" onclick="saveText()" style="display:none">💾 Guardar</button><button onclick="closeOv()">✖ Cerrar</button></div><div id="ovb"></div></div>
+<div id="ov"><div id="ovh"><b id="ovt"></b><button id="ovs" onclick="saveText()" style="display:none">💾 Guardar</button><button id="ove" onclick="editMedia()" style="display:none">✂ Editar</button><button onclick="closeOv()">✖ Cerrar</button></div><div id="ovb"></div></div>
 <div id="menu"><div id="mb"></div></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script>
@@ -299,6 +300,116 @@ async function doSortStl(root,found,move){
     await load();
   }catch(e){say('Error: '+e.message)}
 }
+/* ---- compartir ---- */
+async function shareItems(){
+  const t=marked.size?selItems():targets();
+  if(!t.length){say('Selecciona o marca lo que quieres compartir');return}
+  try{
+    const files=[];say('Preparando...');
+    for(const it of t){
+      if(it.kind=='file')files.push(await it.handle.getFile());
+      else{const z=new JSZip();await addToZip(z,it,'');files.push(new File([await z.generateAsync({type:'blob'})],it.name+'.zip',{type:'application/zip'}))}
+    }
+    if(navigator.canShare&&navigator.canShare({files})){await navigator.share({files,title:files.length==1?files[0].name:files.length+' archivos'});say('Compartido')}
+    else{files.forEach(f=>{const a=document.createElement('a');a.href=URL.createObjectURL(f);a.download=f.name;a.click()});say('Este navegador no puede compartir archivos: se han descargado ('+files.length+')')}
+  }catch(e){if(e.name!='AbortError')say('No se pudo compartir: '+e.message)}
+}
+/* ---- editar audio / video: recortar y cambiar calidad ---- */
+const A_KBPS=[64,96,128,192,256,320];
+const V_Q=[['Baja (480p, ~1 Mbps)',480,1e6],['Media (720p, ~2,5 Mbps)',720,2.5e6],['Alta (1080p, ~6 Mbps)',1080,6e6],['Muy alta (1080p, ~10 Mbps)',1080,1e7]];
+const fmtMs=s=>{s=Math.max(0,Math.floor(s));return (s>=3600?Math.floor(s/3600)+':'+String(Math.floor(s/60)%60).padStart(2,'0'):Math.floor(s/60))+':'+String(s%60).padStart(2,'0')};
+function parseT(t){t=t.trim().replace(',','.');if(!t)return null;const p=t.split(':');let v=0;for(const x of p){const n=parseFloat(x);if(isNaN(n))return NaN;v=v*60+n}return v}
+let editBusy=false,editCancel=false;
+function editMedia(){
+  const it=ov.cur,k=ov.k;if(!it||(k!='vid'&&k!='aud'))return;
+  const el=document.querySelector('#ovb video,#ovb audio');if(!el)return;el.pause();
+  const dur=el.duration,pos=el.currentTime;if(!isFinite(dur)){say('Espera a que cargue el archivo');return}
+  const mb=$('mb');mb.innerHTML='<h3></h3>';mb.firstChild.textContent='Editar '+(k=='aud'?'audio':'vídeo')+': '+it.name;
+  const mk=(t,c)=>{const d=document.createElement('div');d.textContent=t;d.style.cssText=c||'color:#90caf9;font-size:13px;margin-top:8px';return d};
+  const inp=ph=>{const i=document.createElement('input');i.type='text';i.placeholder=ph;i.style.cssText='font:inherit;padding:8px;border-radius:6px;border:2px solid #555;background:#111;color:#eee;flex:1;min-width:0';return i};
+  const row=i=>{const r=document.createElement('div');r.style.cssText='display:flex;gap:6px';const b=document.createElement('button');b.textContent='Aquí ('+fmtMs(pos)+')';b.onclick=()=>{i.value=fmtMs(pos)};r.append(i,b);return r};
+  mb.append(mk('Duración: '+fmtMs(dur)+'. Se crea una COPIA, el original no se toca.','color:#cfd8dc;font-size:13px'));
+  const a=inp('0:00'),b=inp(fmtMs(dur));
+  mb.append(mk('Inicio (cortar por delante) mm:ss — vacío = desde el principio'),row(a),mk('Fin (cortar por detrás) mm:ss — vacío = hasta el final'),row(b));
+  mb.append(mk(k=='aud'?'Calidad del audio (bitrate MP3)':'Calidad del vídeo'));
+  const opts=k=='aud'?A_KBPS.map(x=>x+' kbps'):V_Q.map(x=>x[0]);let sel=k=='aud'?2:1;
+  opts.forEach((t,i)=>{const l=document.createElement('label');l.style.cssText='display:flex;gap:8px;align-items:center;padding:3px 0';const r=document.createElement('input');r.type='radio';r.name='edq';r.checked=i==sel;r.onchange=()=>sel=i;l.append(r,document.createTextNode(t));mb.append(l)});
+  mb.append(mk('Subir la calidad por encima de la del original no la mejora: solo agranda el archivo. '+(k=='aud'?'Resultado: .mp3.':'Resultado: .webm (se procesa en tiempo real: tarda lo que dura el fragmento).'),'color:#90a4ae;font-size:12px;margin-top:8px;max-width:340px'));
+  const ok=document.createElement('button');ok.textContent='✂ Guardar copia';
+  ok.onclick=()=>{
+    let s=a.value.trim()?parseT(a.value):0,e=b.value.trim()?parseT(b.value):dur;
+    if(isNaN(s)||isNaN(e)||s<0){alert('Tiempo no válido (usa mm:ss)');return}
+    e=Math.min(e,dur);if(e-s<0.5){alert('El fragmento resultante es demasiado corto');return}
+    closeMenu();runEdit(it,k,s,e,sel);
+  };
+  const no=document.createElement('button');no.textContent='Cancelar';no.onclick=closeMenu;
+  mb.append(ok,no);$('menu').classList.add('on');a.focus();
+}
+async function saveBlob(name,blob){
+  if(cur&&!readOnly&&!searchMode){
+    try{const n=await uniqueName(cur,name);const w=await(await cur.getFileHandle(n,{create:true})).createWritable();await w.write(blob);await w.close();say('Guardado: '+n+' ('+human(blob.size)+')');return}catch(e){say('No se pudo guardar en la carpeta, se descarga: '+e.message)}
+  }
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();
+}
+async function runEdit(it,k,s,e,q){
+  if(editBusy){say('Ya hay una edición en curso');return}
+  editBusy=true;editCancel=false;
+  const base=it.name.replace(/[.][^.]+$/,'');
+  try{
+    const f=it.file||await it.handle.getFile();
+    const blob=k=='aud'?await editAudio(f,s,e,A_KBPS[q]):await editVideo(f,s,e,V_Q[q][1],V_Q[q][2]);
+    if(blob)await saveBlob(base+'_editado.'+(k=='aud'?'mp3':'webm'),blob);else say('Edición cancelada');
+  }catch(err){say('No se pudo editar: '+(err&&err.message||err))}
+  editBusy=false;
+}
+async function editAudio(f,s,e,kbps){
+  say('Cargando codificador MP3...');
+  if(!window.lamejs)await loadScript('https://cdnjs.cloudflare.com/ajax/libs/lamejs/1.2.1/lame.min.js');
+  say('Decodificando audio...');
+  const ctx=new (window.AudioContext||window.webkitAudioContext)();
+  const buf=await ctx.decodeAudioData(await f.arrayBuffer());ctx.close();
+  const sr=buf.sampleRate,i0=Math.floor(s*sr),i1=Math.min(buf.length,Math.floor(e*sr)),ch=Math.min(2,buf.numberOfChannels),n=i1-i0;
+  const conv=a=>{const o=new Int16Array(n);for(let i=0;i<n;i++){const v=Math.max(-1,Math.min(1,a[i0+i]));o[i]=v<0?v*32768:v*32767}return o};
+  const L=conv(buf.getChannelData(0)),R=ch>1?conv(buf.getChannelData(1)):null;
+  const enc=new lamejs.Mp3Encoder(ch,sr,kbps),out=[];
+  for(let i=0;i<n;i+=1152){
+    const b=ch>1?enc.encodeBuffer(L.subarray(i,i+1152),R.subarray(i,i+1152)):enc.encodeBuffer(L.subarray(i,i+1152));
+    if(b.length)out.push(new Int8Array(b));
+    if((i/1152)%200==0){say('Codificando MP3... '+Math.round(i*100/n)+' %  (Esc cancela)');await new Promise(r=>setTimeout(r));if(editCancel)return null}
+  }
+  const end=enc.flush();if(end.length)out.push(new Int8Array(end));
+  return new Blob(out,{type:'audio/mpeg'});
+}
+async function editVideo(f,s,e,height,vbps){
+  const url=URL.createObjectURL(f),v=document.createElement('video');v.src=url;v.playsInline=true;v.preload='auto';
+  await new Promise((ok,ko)=>{v.onloadedmetadata=ok;v.onerror=()=>ko(new Error('No se pudo leer el vídeo'))});
+  const th=height,tw=Math.max(2,Math.round(v.videoWidth*th/v.videoHeight/2)*2);
+  const cv=document.createElement('canvas');cv.width=tw;cv.height=th;const g=cv.getContext('2d');
+  const stream=cv.captureStream(30);
+  const ac=new (window.AudioContext||window.webkitAudioContext)();await ac.resume();
+  const src=ac.createMediaElementSource(v),dst=ac.createMediaStreamDestination();src.connect(dst);
+  dst.stream.getAudioTracks().forEach(t=>stream.addTrack(t));
+  const mt=['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm'].find(t=>MediaRecorder.isTypeSupported(t));
+  if(!mt)throw new Error('Este navegador no puede grabar vídeo (usa Chrome o Edge)');
+  const rec=new MediaRecorder(stream,{mimeType:mt,videoBitsPerSecond:vbps,audioBitsPerSecond:128000}),chunks=[];
+  rec.ondataavailable=ev=>{if(ev.data.size)chunks.push(ev.data)};
+  const done=new Promise(r=>rec.onstop=r);
+  v.currentTime=s;await new Promise(r=>v.onseeked=r);
+  rec.start(500);await v.play();
+  let cancelled=false;
+  await new Promise(res=>{
+    const draw=()=>{
+      g.drawImage(v,0,0,tw,th);
+      const p=Math.min(100,Math.round((v.currentTime-s)*100/(e-s)));say('Procesando vídeo... '+p+' %  (Esc cancela)');
+      if(editCancel){cancelled=true;res();return}
+      if(v.currentTime>=e||v.ended){res();return}
+      requestAnimationFrame(draw)};
+    draw();
+  });
+  v.pause();rec.stop();await done;ac.close();URL.revokeObjectURL(url);
+  return cancelled?null:new Blob(chunks,{type:'video/webm'});
+}
+
 function renameSel(){const t=selItems();if(t.length==1)rename(t[0]);else say('Para renombrar deja seleccionado un solo elemento')}
 const norm=t=>t.normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase();
 function searchDlg(){
@@ -439,7 +550,7 @@ function stlPan(dx,dy){
   const d=r.multiplyScalar(dx).add(u.multiplyScalar(dy));cam.position.add(d);sv.controls.target.add(d);
 }
 function overlay(title,node,save){
-  stopStl();closeBlob();$('ovt').textContent=title;$('ovs').style.display=save?'':'none';
+  stopStl();closeBlob();$('ove').style.display='none';$('ovt').textContent=title;$('ovs').style.display=save?'':'none';
   const b=$('ovb');b.innerHTML='';b.appendChild(node);$('ov').classList.add('on');
 }
 function closeBlob(){if(blobUrl){URL.revokeObjectURL(blobUrl);blobUrl=null}}
@@ -449,14 +560,13 @@ function closeOv(){
 }
 async function showMedia(it,k){
   const f=it.file||await it.handle.getFile();
-  closeBlob();blobUrl=URL.createObjectURL(f);
   let n;
-  if(k=='img'){n=new Image();n.src=blobUrl}
-  else if(k=='vid'||k=='aud'){n=document.createElement(k=='vid'?'video':'audio');n.src=blobUrl;n.controls=true;n.autoplay=true;
-    n.onended=()=>step(1);}
-  else{n=document.createElement('iframe');n.src=blobUrl}
-  const old=blobUrl;overlay(it.name+'  ('+(mediaList.indexOf(it)+1)+'/'+mediaList.length+')',n);blobUrl=old;
-  ov.cur=it;ov.k=k;
+  if(k=='img'){n=new Image()}
+  else if(k=='vid'||k=='aud'){n=document.createElement(k=='vid'?'video':'audio');n.controls=true;n.autoplay=true;n.onended=()=>step(1)}
+  else{n=document.createElement('iframe')}
+  overlay(it.name+'  ('+(mediaList.indexOf(it)+1)+'/'+mediaList.length+')',n);   // overlay libera la URL anterior
+  blobUrl=URL.createObjectURL(f);n.src=blobUrl;
+  ov.cur=it;ov.k=k;if(k=='vid'||k=='aud')$('ove').style.display='';
   if(n.focus&&k!='pdf')n.tabIndex=0;
 }
 const ov={};
@@ -571,6 +681,7 @@ document.addEventListener('keyup',e=>{
   if(marked.size){if(items[sel])toggleMark(items[sel])}else openItem();
 });
 document.addEventListener('keydown',e=>{
+  if(editBusy&&e.key=='Escape'){editCancel=true;return}
   if($('menu').classList.contains('on')){
     const bs=[...$('mb').querySelectorAll('button,input')],i=bs.indexOf(document.activeElement);
     if(e.key=='ArrowDown'){bs[(i+1)%bs.length].focus();e.preventDefault()}
